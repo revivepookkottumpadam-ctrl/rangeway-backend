@@ -24,9 +24,9 @@ const ADMIN_HASH = bcrypt.hashSync(process.env.ADMIN_PASSWORD || 'admin789', 10)
 
 // Predefined Users
 const PREDEFINED_USERS = [
-  { id: 'advisor1@rangeway.com', hash: ADVISOR1_HASH, name: 'Service Advisor 1', role: 'advisor' },
-  { id: 'advisor2@rangeway.com', hash: ADVISOR2_HASH, name: 'Service Advisor 2', role: 'advisor' },
-  { id: 'admin@rangeway.com', hash: ADMIN_HASH, name: 'System Administrator', role: 'admin' }
+  { id: process.env.ADVISOR1_EMAIL || 'advisor1@rangeway.com', hash: ADVISOR1_HASH, name: 'Service Advisor 1', role: 'advisor' },
+  { id: process.env.ADVISOR2_EMAIL || 'advisor2@rangeway.com', hash: ADVISOR2_HASH, name: 'Service Advisor 2', role: 'advisor' },
+  { id: process.env.ADMIN_EMAIL || 'admin@rangeway.com', hash: ADMIN_HASH, name: 'System Administrator', role: 'admin' }
 ];
 
 // Initialize Mock database file if it doesn't exist
@@ -46,7 +46,7 @@ if (process.env.DATABASE_URL) {
       ssl: isLocalhost ? false : { rejectUnauthorized: false }
     });
     console.log(`PostgreSQL Pool initialized (SSL ${isLocalhost ? 'disabled for localhost' : 'enabled'}).`);
-    
+
     // Test database connection
     pool.query('SELECT NOW()', (err, res) => {
       if (err) {
@@ -89,9 +89,9 @@ const writeMockDb = (data) => {
 const authenticateToken = (req, res, next) => {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
-  
+
   if (!token) return res.status(401).json({ message: 'Access token required' });
-  
+
   jwt.verify(token, JWT_SECRET, (err, user) => {
     if (err) return res.status(403).json({ message: 'Invalid or expired token' });
     req.user = user;
@@ -104,7 +104,7 @@ const authenticateToken = (req, res, next) => {
 // 1. Auth: Login Route
 app.post('/api/auth/login', (req, res) => {
   const { id, password } = req.body;
-  
+
   if (!id || !password) {
     return res.status(400).json({ message: 'Email and password are required' });
   }
@@ -136,7 +136,7 @@ app.post('/api/auth/login', (req, res) => {
 // 2. JobCards: Create
 app.post('/api/jobcards', authenticateToken, async (req, res) => {
   const jc = req.body;
-  
+
   // Basic validation
   if (!jc.jc_no || !jc.reg_no || !jc.model || !jc.customer_name || !jc.mobile) {
     return res.status(400).json({ message: 'Required fields missing: JC No, Reg No, Model, Customer Name, and Mobile Phone are required.' });
@@ -200,7 +200,7 @@ app.get('/api/jobcards', authenticateToken, async (req, res) => {
     let db = readMockDb();
     if (search) {
       const s = search.toLowerCase();
-      db = db.filter(item => 
+      db = db.filter(item =>
         (item.jc_no && item.jc_no.toLowerCase().includes(s)) ||
         (item.reg_no && item.reg_no.toLowerCase().includes(s)) ||
         (item.customer_name && item.customer_name.toLowerCase().includes(s)) ||
@@ -289,7 +289,7 @@ app.put('/api/jobcards/:id', authenticateToken, async (req, res) => {
       if (original.rows.length === 0) {
         return res.status(404).json({ message: 'Job card not found' });
       }
-      
+
       if (jc.jc_no && jc.jc_no !== original.rows[0].jc_no) {
         const duplicate = await pool.query('SELECT id FROM job_cards WHERE jc_no = $1 AND id <> $2', [jc.jc_no, id]);
         if (duplicate.rows.length > 0) {
@@ -334,7 +334,7 @@ app.delete('/api/jobcards/:id', authenticateToken, async (req, res) => {
     const db = readMockDb();
     const index = db.findIndex(x => x.id === parseInt(id));
     if (index === -1) return res.status(404).json({ message: 'Job card not found' });
-    
+
     db.splice(index, 1);
     writeMockDb(db);
     return res.json({ message: 'Job card deleted successfully' });
@@ -392,10 +392,10 @@ app.post('/api/export/sheets', authenticateToken, async (req, res) => {
     const today = new Date();
     const currentYear = today.getFullYear();
     const currentMonth = today.getMonth(); // 0-11
-    
+
     allJobCards = allJobCards.filter(jc => {
       if (!jc.date) return false;
-      
+
       let jcYear, jcMonth;
       if (typeof jc.date === 'string') {
         const parts = jc.date.split('-'); // e.g. "2026-06-23"
@@ -404,13 +404,13 @@ app.post('/api/export/sheets', authenticateToken, async (req, res) => {
           jcMonth = parseInt(parts[1], 10) - 1; // 0-indexed
         }
       }
-      
+
       if (jcYear === undefined || isNaN(jcYear)) {
         const jcDate = new Date(jc.date);
         jcYear = jcDate.getFullYear();
         jcMonth = jcDate.getMonth();
       }
-      
+
       return jcYear === currentYear && jcMonth === currentMonth;
     });
   }
@@ -423,31 +423,36 @@ app.post('/api/export/sheets', authenticateToken, async (req, res) => {
     });
     const sheets = google.sheets({ version: 'v4', auth });
 
-    // Helper to format products array into readable text
-    const formatProducts = (raw) => {
+    // Helpers to parse and format raw product/labour data fields into multiline strings
+    const getParsedItems = (raw) => {
       let items = [];
       if (typeof raw === 'string') {
-        try { items = JSON.parse(raw); } catch { return raw || ''; }
+        try { items = JSON.parse(raw); } catch { return []; }
       } else if (Array.isArray(raw)) {
         items = raw;
       }
-      if (!items.length) return '';
-      return items.map((p, i) =>
-        `${i + 1}. ${p.particulars || ''}${p.code ? ` (${p.code})` : ''} | Qty: ${p.qty || 0} | Rate: Rs.${parseFloat(p.rate || 0).toFixed(2)} | Amt: Rs.${parseFloat(p.amount || 0).toFixed(2)}`
-      ).join('\n');
+      return items;
     };
 
-    const formatLabour = (raw) => {
-      let items = [];
-      if (typeof raw === 'string') {
-        try { items = JSON.parse(raw); } catch { return raw || ''; }
-      } else if (Array.isArray(raw)) {
-        items = raw;
-      }
-      if (!items.length) return '';
-      return items.map((l, i) =>
-        `${i + 1}. ${l.particulars || ''} | Qty: ${l.qty || 0} | Rate: Rs.${parseFloat(l.rate || 0).toFixed(2)} | Amt: Rs.${parseFloat(l.amount || 0).toFixed(2)}`
-      ).join('\n');
+    const getProductFields = (raw) => {
+      const items = getParsedItems(raw);
+      return {
+        codes: items.map(p => p.code || '').join('\n'),
+        particulars: items.map(p => p.particulars || '').join('\n'),
+        qtys: items.map(p => p.qty || '').join('\n'),
+        rates: items.map(p => p.rate ? parseFloat(p.rate).toFixed(2) : '').join('\n'),
+        amounts: items.map(p => p.amount ? parseFloat(p.amount).toFixed(2) : '').join('\n')
+      };
+    };
+
+    const getLabourFields = (raw) => {
+      const items = getParsedItems(raw);
+      return {
+        particulars: items.map(l => l.particulars || '').join('\n'),
+        qtys: items.map(l => l.qty || '').join('\n'),
+        rates: items.map(l => l.rate ? parseFloat(l.rate).toFixed(2) : '').join('\n'),
+        amounts: items.map(l => l.amount ? parseFloat(l.amount).toFixed(2) : '').join('\n')
+      };
     };
 
     // Build header row
@@ -457,36 +462,48 @@ app.post('/api/export/sheets', authenticateToken, async (req, res) => {
       'Customer Demands', 'Action Taken',
       'Est. Service Charge', 'Tax', 'Total Amount', 'Grand Total',
       'Advisor Name', 'Service Advise',
-      'Products', 'Labour',
+      'Product Code', 'Product Particulars', 'Product Qty', 'Product Rate', 'Product Amount',
+      'Labour Particulars', 'Labour Qty', 'Labour Rate', 'Labour Amount',
       'Created At', 'Updated At'
     ];
 
     // Build data rows
-    const dataRows = allJobCards.map(jc => [
-      jc.id || '',
-      jc.jc_no || '',
-      jc.date ? new Date(jc.date).toLocaleDateString('en-IN') : '',
-      jc.reg_no || '',
-      jc.model || '',
-      jc.engine_no || '',
-      jc.service_type || '',
-      jc.customer_name || '',
-      jc.address || '',
-      jc.phone || '',
-      jc.mobile || '',
-      jc.customer_demands || '',
-      jc.action_taken || '',
-      parseFloat(jc.estimate_service_charge) || 0,
-      parseFloat(jc.tax) || 0,
-      parseFloat(jc.total_amount) || 0,
-      parseFloat(jc.grand_total) || 0,
-      jc.advisor_name || '',
-      jc.service_advise || '',
-      formatProducts(jc.products),
-      formatLabour(jc.labour),
-      jc.created_at ? new Date(jc.created_at).toLocaleString('en-IN') : '',
-      jc.updated_at ? new Date(jc.updated_at).toLocaleString('en-IN') : '',
-    ]);
+    const dataRows = allJobCards.map(jc => {
+      const pf = getProductFields(jc.products);
+      const lf = getLabourFields(jc.labour);
+      return [
+        jc.id || '',
+        jc.jc_no || '',
+        jc.date ? new Date(jc.date).toLocaleDateString('en-IN') : '',
+        jc.reg_no || '',
+        jc.model || '',
+        jc.engine_no || '',
+        jc.service_type || '',
+        jc.customer_name || '',
+        jc.address || '',
+        jc.phone || '',
+        jc.mobile || '',
+        jc.customer_demands || '',
+        jc.action_taken || '',
+        parseFloat(jc.estimate_service_charge) || 0,
+        parseFloat(jc.tax) || 0,
+        parseFloat(jc.total_amount) || 0,
+        parseFloat(jc.grand_total) || 0,
+        jc.advisor_name || '',
+        jc.service_advise || '',
+        pf.codes,
+        pf.particulars,
+        pf.qtys,
+        pf.rates,
+        pf.amounts,
+        lf.particulars,
+        lf.qtys,
+        lf.rates,
+        lf.amounts,
+        jc.created_at ? new Date(jc.created_at).toLocaleString('en-IN') : '',
+        jc.updated_at ? new Date(jc.updated_at).toLocaleString('en-IN') : '',
+      ];
+    });
 
     // Clear the sheet then write data
     await sheets.spreadsheets.values.clear({
@@ -562,6 +579,15 @@ app.post('/api/export/sheets', authenticateToken, async (req, res) => {
     });
   }
 });
+
+// ✅ Health check route 
+app.get('/', (req, res) => {
+  res.status(200).json({
+    success: true,
+    message: '✅ Server is awake and running'
+  });
+});
+
 
 // Start Server
 app.listen(PORT, () => {
