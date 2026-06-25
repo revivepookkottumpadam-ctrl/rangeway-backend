@@ -355,9 +355,6 @@ app.delete('/api/jobcards/:id', authenticateToken, async (req, res) => {
 // 7. Export: Push all job cards to Google Sheets
 app.post('/api/export/sheets', authenticateToken, async (req, res) => {
   const SHEET_ID = process.env.GOOGLE_SHEET_ID;
-  const KEY_PATH = process.env.GOOGLE_SERVICE_ACCOUNT_KEY_PATH
-    ? path.resolve(__dirname, process.env.GOOGLE_SERVICE_ACCOUNT_KEY_PATH)
-    : path.join(__dirname, 'google-service-account.json');
 
   if (!SHEET_ID || SHEET_ID === 'your_google_sheet_id_here') {
     return res.status(400).json({
@@ -365,10 +362,35 @@ app.post('/api/export/sheets', authenticateToken, async (req, res) => {
     });
   }
 
-  if (!fs.existsSync(KEY_PATH)) {
-    return res.status(400).json({
-      message: `Service account key file not found at "${KEY_PATH}". Please follow the setup guide in GOOGLE_SHEETS_SETUP.md.`
-    });
+  // Support credentials from env var (for cloud hosting like Render)
+  // OR fallback to a local key file (for local development)
+  let googleCredentials = null;
+  if (process.env.GOOGLE_SERVICE_ACCOUNT_JSON) {
+    try {
+      googleCredentials = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON);
+    } catch (e) {
+      return res.status(500).json({
+        message: 'GOOGLE_SERVICE_ACCOUNT_JSON environment variable contains invalid JSON.',
+        error: e.message
+      });
+    }
+  } else {
+    const KEY_PATH = process.env.GOOGLE_SERVICE_ACCOUNT_KEY_PATH
+      ? path.resolve(__dirname, process.env.GOOGLE_SERVICE_ACCOUNT_KEY_PATH)
+      : path.join(__dirname, 'google-service-account.json');
+    if (!fs.existsSync(KEY_PATH)) {
+      return res.status(400).json({
+        message: `Service account key file not found at "${KEY_PATH}". Set GOOGLE_SERVICE_ACCOUNT_JSON env var for cloud hosting.`
+      });
+    }
+    try {
+      googleCredentials = JSON.parse(fs.readFileSync(KEY_PATH, 'utf8'));
+    } catch (e) {
+      return res.status(500).json({
+        message: 'Failed to read or parse service account key file.',
+        error: e.message
+      });
+    }
   }
 
   // Load all job cards
@@ -416,9 +438,9 @@ app.post('/api/export/sheets', authenticateToken, async (req, res) => {
   }
 
   try {
-    // Authenticate with Google using the service account
+    // Authenticate with Google using parsed credentials object
     const auth = new google.auth.GoogleAuth({
-      keyFile: KEY_PATH,
+      credentials: googleCredentials,
       scopes: ['https://www.googleapis.com/auth/spreadsheets'],
     });
     const sheets = google.sheets({ version: 'v4', auth });
